@@ -751,7 +751,7 @@ main {
   background: var(--surface);
   border-radius: var(--r);
   box-shadow: var(--shadow);
-  overflow: hidden;
+  overflow: clip;
   scroll-margin-top: 70px;
 }
 
@@ -1065,9 +1065,6 @@ main {
 }
 
 .seat-sum {
-  position: sticky;
-  bottom: calc(var(--nav-h) + env(safe-area-inset-bottom) + 8px);
-  z-index: 5;
   margin-top: 12px;
   background: var(--ink);
   color: var(--surface);
@@ -1077,6 +1074,14 @@ main {
   align-items: center;
   gap: 10px;
   box-shadow: var(--shadow-lift);
+}
+
+.seat-sum.top {
+  /* sticks under the top bar while the party rows scroll past, then leaves with them */
+  position: sticky;
+  top: calc(env(safe-area-inset-top) + 62px);
+  z-index: 5;
+  margin: 0 0 6px;
 }
 
 .seat-sum .count {

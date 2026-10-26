@@ -317,6 +317,21 @@ function SeatsInput({ q, answer, open, truth, crowd, save }) {
     setBusy(false);
   }
 
+  // Shown twice: pinned above the table while filling it in, and again after the last party.
+  const sumBar = (where) => html`<div class=${`seat-sum ${where} ${sum === SEATS_TOTAL ? 'ok' : ''}`}>
+    <span class="count num">${sum}/120</span>
+    <span class="msg">
+      ${sum === SEATS_TOTAL
+        ? dirty
+          ? 'מושלם! אפשר לשמור'
+          : 'נשמר ✓'
+        : sum < SEATS_TOTAL
+          ? `נותרו ${SEATS_TOTAL - sum} מנדטים לחלק`
+          : `${sum - SEATS_TOTAL} מנדטים יותר מדי`}
+    </span>
+    <button type="button" class="btn" disabled=${sum !== SEATS_TOTAL || !dirty || busy} onClick=${submit}>${busy ? '…' : 'שמירה'}</button>
+  </div>`;
+
   if (!open) {
     const mine = answer;
     return html`<div>
@@ -358,7 +373,8 @@ function SeatsInput({ q, answer, open, truth, crowd, save }) {
         <button type="button" class="btn quiet small" onClick=${syncWithThreshold}>לתקן אוטומטית</button>
       <//>
     </div>`}
-    <div style=${{ marginTop: '6px' }}>
+    <div style=${{ marginTop: '10px' }}>
+      ${sumBar('top')}
       ${PARTIES.map((p) => {
         const v = draft[p.id];
         const b = seatBounds(p.id, threshold);
@@ -377,19 +393,7 @@ function SeatsInput({ q, answer, open, truth, crowd, save }) {
       })}
     </div>
     <button type="button" class="btn quiet small" onClick=${resetToPolls}>↺ חזרה לממוצע הסקרים</button>
-    <div class=${`seat-sum ${sum === SEATS_TOTAL ? 'ok' : ''}`}>
-      <span class="count num">${sum}/120</span>
-      <span class="msg">
-        ${sum === SEATS_TOTAL
-          ? dirty
-            ? 'מושלם! אפשר לשמור'
-            : 'נשמר ✓'
-          : sum < SEATS_TOTAL
-            ? `נותרו ${SEATS_TOTAL - sum} מנדטים לחלק`
-            : `${sum - SEATS_TOTAL} מנדטים יותר מדי`}
-      </span>
-      <button type="button" class="btn" disabled=${sum !== SEATS_TOTAL || !dirty || busy} onClick=${submit}>${busy ? '…' : 'שמירה'}</button>
-    </div>
+    ${sumBar('bottom')}
   </div>`;
 }
 
