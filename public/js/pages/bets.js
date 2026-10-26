@@ -156,23 +156,43 @@ function CardFoot({ q, answer, score, truth, open, locked, preview }) {
 
 const pct = (n, of) => (of ? Math.round((n / of) * 100) : 0);
 
+// Poll average as shown on a slip, e.g. "סקרים: 8" or "מתחת לסף".
+const slipPoll = (p) => (p.poll >= MIN_SEATS ? `סקרים: ${p.poll}` : 'מתחת לסף');
+
+function pollDetail(q, p) {
+  const avg =
+    p.poll >= MIN_SEATS
+      ? html`ממוצע הסקרים של <b>${p.name}</b>: <b class="num">${p.poll}</b> מנדטים`
+      : p.poll > 0
+        ? html`<b>${p.name}</b> מתחת לאחוז החסימה ברוב הסקרים (<b class="num">${p.poll}</b> מנדטים בממוצע)`
+        : html`<b>${p.name}</b> מתחת לאחוז החסימה בכל הסקרים (0 מנדטים בממוצע)`;
+  if (q.id === 'surprise') return html`${avg}. כל מנדט מעל זה נספר כהפתעה.`;
+  if (q.id === 'flop') {
+    return p.poll > 0 ? html`${avg}. כל מנדט מתחת לזה נספר כאכזבה.` : html`${avg} — אין לה מאיפה לרדת.`;
+  }
+  return avg;
+}
+
 function PartyPick({ q, answer, open, truth, crowd, save }) {
+  const picked = answer && PARTY[answer];
   return html`<div class="slips">
-    ${q.options.map((o) => {
-      const selected = answer === o.id;
-      const state = truth ? (truth.includes(o.id) ? 'correct' : selected ? 'wrong' : null) : null;
-      return html`<${Slip}
-        key=${o.id}
-        pid=${o.id}
-        selected=${selected}
-        state=${state}
-        dim=${!open && !selected && !state}
-        disabled=${!open}
-        share=${crowd ? pct(crowd.counts[o.id], crowd.n) : undefined}
-        onClick=${() => open && !selected && save(o.id)}
-      />`;
-    })}
-  </div>`;
+      ${q.options.map((o) => {
+        const selected = answer === o.id;
+        const state = truth ? (truth.includes(o.id) ? 'correct' : selected ? 'wrong' : null) : null;
+        return html`<${Slip}
+          key=${o.id}
+          pid=${o.id}
+          selected=${selected}
+          state=${state}
+          dim=${!open && !selected && !state}
+          disabled=${!open}
+          poll=${slipPoll(PARTY[o.id])}
+          share=${crowd ? pct(crowd.counts[o.id], crowd.n) : undefined}
+          onClick=${() => open && !selected && save(o.id)}
+        />`;
+      })}
+    </div>
+    ${picked && html`<div class="q-context" style=${{ margin: '12px 0 0' }} aria-live="polite">📊 ${pollDetail(q, picked)}</div>`}`;
 }
 
 function OptionList({ q, answer, open, truth, crowd, save }) {

@@ -24,16 +24,18 @@ export function Admin() {
 
   return html`
     <section class="hero">
-      <h1>🛠️ ניהול המשחק</h1>
+      <h1>🛠️ ניהול האתר</h1>
       <p class="sub">
-        ${data.users.length} משתתפים · התראות: ${data.push.users} אנשים (${data.push.n} מכשירים) · כניסה:
+        ${data.leagues.length} ליגות · ${data.users.length} משתתפים · התראות: ${data.push.users} אנשים (${data.push.n} מכשירים) · כניסה:
         ${data.mail ? `קוד במייל (${data.mail})` : 'מייל + קוד אישי'}
       </p>
+      <p class="sub" style=${{ marginTop: '6px' }}>תוצאות, זמני נעילה ושלב ב׳ שמוזנים כאן חלים על כל הליגות.</p>
     </section>
     <${Stage1Results} data=${data} reload=${reload} />
     <${Stage2Panel} data=${data} reload=${reload} />
     <${LockTimes} data=${data} reload=${reload} />
     <${Broadcast} reload=${reload} />
+    <${Leagues} data=${data} />
     <${Users} data=${data} reload=${reload} />
   `;
 }
@@ -245,12 +247,24 @@ function Broadcast({ reload }) {
     }
   }
   return html`<details class="card">
-    <summary class="card-title">📣 הודעה לכולם</summary>
+    <summary class="card-title">📣 הודעה לכל המשתתפים בכל הליגות</summary>
     <div class="stack">
       <input class="input" placeholder="כותרת (למשל: 🔥 עוד שעה לנעילה!)" value=${title} onInput=${(e) => setTitle(e.target.value)} maxlength="80" />
       <textarea class="input" rows="3" placeholder="תוכן (לא חובה)" value=${body} onInput=${(e) => setBody(e.target.value)} maxlength="300"></textarea>
       <button class="btn" disabled=${!title.trim()} onClick=${send}>שליחה בפוש + בעדכונים</button>
     </div>
+  </details>`;
+}
+
+function Leagues({ data }) {
+  return html`<details class="card">
+    <summary class="card-title">🏟️ ליגות (${data.leagues.length})</summary>
+    ${data.leagues.map(
+      (l) => html`<div class="row user-row" key=${l.id} style=${{ display: 'flex' }}>
+        <div class="grow"><b>${l.name}</b><div class="tiny muted">נפתחה ע״י ${l.creator || '—'} · קוד <span class="ltr">${l.id}</span></div></div>
+        <span class="small num">${l.members} 👥</span>
+      </div>`,
+    )}
   </details>`;
 }
 

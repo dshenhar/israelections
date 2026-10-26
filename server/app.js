@@ -4,7 +4,7 @@ import crypto from 'node:crypto';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { waitUntil } from '@vercel/functions';
-import { q, one, json, kvInit, kvSet, getSettings, getResults, allPredictions, hit } from './db.js';
+import { q, one, json, kvInit, kvSet, getSettings, getResults, allPredictions, hit, newLeagueId } from './db.js';
 import { mailMode, sendLoginCode } from './mail.js';
 import { vapidPublicKey, saveSubscription, removeSubscription, pushToUsers, subscriptionCount, userHasPush } from './push.js';
 import {
@@ -140,13 +140,21 @@ const requireAdmin = (req, res, next) => (req.user?.is_admin ? next() : next(new
 
 const stageCount = (stage) => QUESTIONS.filter((q) => q.stage === stage).length;
 
-async function computeGame() {
-  const [settings, results, users, preds] = await Promise.all([
+// Scores the players of one league (crowd stats and the lone-wolf bonus are relative to that league).
+// leagueId = null scores every player with a profile — used for reminders.
+async function computeGame(leagueId) {
+  const [settings, results, users] = await Promise.all([
     getSettings(),
     getResults(),
-    q('SELECT id, name, team, emoji FROM users WHERE name IS NOT NULL'),
-    allPredictions(),
+    leagueId
+      ? q(
+          `SELECT u.id, u.name, u.emoji, m.team FROM league_members m JOIN users u ON u.id = m.user_id
+           WHERE m.league_id = $1 AND u.name IS NOT NULL`,
+          [leagueId],
+        )
+      : q('SELECT id, name, emoji, team FROM users WHERE name IS NOT NULL'),
   ]);
+  const preds = await allPredictions(users.map((u) => u.id));
   const crowd = crowdStats(users.map((u) => preds.get(u.id)?.answers || {}), results);
   const players = users.map((u) => {
     const p = preds.get(u.id) || { answers: {}, updated: {} };
@@ -186,6 +194,39 @@ function winners(players, key) {
     .filter((p) => p.rank === 1)
     .map((p) => p.id);
 }
+
+// ---------- leagues ----------
+
+async function myLeagues(userId) {
+  return q(
+    `SELECT l.id, l.name, m.role, m.team,
+       (SELECT COUNT(*)::int FROM league_members x WHERE x.league_id = l.id) AS members
+     FROM league_members m JOIN leagues l ON l.id = m.league_id
+     WHERE m.user_id = $1 ORDER BY m.joined_at`,
+    [userId],
+  );
+}
+
+// The league named in ?league=, or the first one the player joined.
+async function currentLeague(req) {
+  const leagues = await myLeagues(req.user.id);
+  const wanted = String(req.query.league || '');
+  return { leagues, league: leagues.find((l) => l.id === wanted) || leagues[0] || null };
+}
+
+async function membership(leagueId, userId) {
+  return one('SELECT * FROM league_members WHERE league_id = $1 AND user_id = $2', [leagueId, userId]);
+}
+
+async function requireLeagueAdmin(req) {
+  const league = await one('SELECT * FROM leagues WHERE id = $1', [req.params.id]);
+  if (!league) throw new HttpError(404, 'הליגה לא נמצאה');
+  const m = await membership(league.id, req.user.id);
+  if (!req.user.is_admin && m?.role !== 'admin') throw new HttpError(403, 'רק מנהלי הליגה יכולים לעשות את זה');
+  return league;
+}
+
+const cleanTeam = (v) => String(v || '').trim().slice(0, 40) || null;
 
 // ---------- auth ----------
 
@@ -270,11 +311,16 @@ app.patch(
   requireUser,
   wrap(async (req, res) => {
     const name = String(req.body.name ?? req.user.name ?? '').trim().slice(0, 40);
-    const team = String(req.body.team ?? req.user.team ?? '').trim().slice(0, 40);
     const emoji = String(req.body.emoji ?? req.user.emoji ?? '🙂').slice(0, 8);
     if (name.length < 2) throw new HttpError(400, 'מה השם? (לפחות 2 תווים)');
-    await q('UPDATE users SET name = $1, team = $2, emoji = $3 WHERE id = $4', [name, team || null, emoji, req.user.id]);
-    res.json({ user: publicUser({ ...req.user, name, team, emoji }) });
+    await q('UPDATE users SET name = $1, emoji = $2 WHERE id = $3', [name, emoji, req.user.id]);
+    // The team belongs to a league; it is also remembered as the default for leagues joined later.
+    if ('team' in req.body) {
+      const team = cleanTeam(req.body.team);
+      await q('UPDATE users SET team = $1 WHERE id = $2', [team, req.user.id]);
+      if (req.body.league) await q('UPDATE league_members SET team = $1 WHERE league_id = $2 AND user_id = $3', [team, String(req.body.league), req.user.id]);
+    }
+    res.json({ user: publicUser({ ...req.user, name, emoji }) });
   }),
 );
 
@@ -284,20 +330,29 @@ app.get(
   wrap(async (req, res) => {
     const now = Date.now();
     const uid = req.user.id;
+    const { leagues, league } = await currentLeague(req);
+    const lid = league?.id || null;
     const [game, myAnswers, snapshots, feed, hasPush] = await Promise.all([
-      computeGame(),
+      computeGame(lid),
       q('SELECT qid, answer, updated_at FROM predictions WHERE user_id = $1', [uid]),
-      q('SELECT label, data, created_at FROM snapshots ORDER BY id'),
-      q('SELECT id, title, body, url, created_at FROM feed WHERE user_id IS NULL OR user_id = $1 ORDER BY id DESC LIMIT 20', [uid]),
+      lid ? q('SELECT label, data, created_at FROM snapshots WHERE league_id = $1 ORDER BY id', [lid]) : [],
+      q(
+        `SELECT id, title, body, url, created_at FROM feed
+         WHERE (league_id IS NULL AND (user_id IS NULL OR user_id = $1)) OR league_id = $2
+         ORDER BY id DESC LIMIT 20`,
+        [uid, lid],
+      ),
       userHasPush(uid),
       !req.user.last_seen || now - req.user.last_seen > 60_000
         ? q('UPDATE users SET last_seen = $1 WHERE id = $2', [now, uid])
         : null,
     ]);
-    const { settings, results, crowd, players } = game;
+    const { settings, results, crowd } = game;
+    const players = lid ? game.players : [];
     const me = players.find((p) => p.id === uid);
+    const answers = Object.fromEntries(myAnswers.map((r) => [r.qid, r.answer]));
     const visibleCrowd = {};
-    for (const qq of QUESTIONS) if (isLocked(qq, settings, now)) visibleCrowd[qq.id] = crowd[qq.id];
+    if (lid) for (const qq of QUESTIONS) if (isLocked(qq, settings, now)) visibleCrowd[qq.id] = crowd[qq.id];
     const myHistory = snapshots
       .map((s) => {
         const d = s.data[uid];
@@ -306,7 +361,7 @@ app.get(
       .filter(Boolean);
     const s1Winners = results.stage1?.final ? winners(players, 's1') : [];
     const s2Winners = settings.stage2Final ? winners(players, 's2') : [];
-    const myScore = me?.score || scorePlayer({}, results, crowd);
+    const myScore = me?.score || scorePlayer(answers, results, crowd);
     const teams = [...new Set(players.map((p) => p.team).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'he'));
 
     // No background scheduler on serverless: the traffic itself drives the lock reminders.
@@ -314,17 +369,19 @@ app.get(
 
     res.json({
       now,
-      user: publicUser(req.user),
+      user: { ...publicUser(req.user), team: league?.team || '' },
+      league,
+      leagues,
       settings,
       results,
       knesset: knessetParties(results),
-      answers: Object.fromEntries(myAnswers.map((r) => [r.qid, r.answer])),
+      answers,
       answeredAt: Object.fromEntries(myAnswers.map((r) => [r.qid, r.updated_at])),
       myScore,
       badges: badgesFor(myScore, {
         stage1Winner: s1Winners.includes(uid),
         stage2Winner: s2Winners.includes(uid),
-        complete1: (me?.answered1 || 0) === stageCount(1),
+        complete1: QUESTIONS.filter((qq) => qq.stage === 1).every((qq) => isAnswered(qq, answers[qq.id])),
       }),
       leaderboard: players.map(leaderboardRow),
       winners: { 1: s1Winners, 2: s2Winners },
@@ -363,12 +420,14 @@ app.put(
   }),
 );
 
-// Another player's slip — only questions that are already locked.
+// Another player's slip — only within a shared league, and only questions that are already locked.
 app.get(
   '/api/players/:id',
   requireUser,
   wrap(async (req, res) => {
-    const { settings, players } = await computeGame();
+    const { league } = await currentLeague(req);
+    if (!league) throw new HttpError(404, 'לא נמצא');
+    const { settings, players } = await computeGame(league.id);
     const p = players.find((x) => x.id === Number(req.params.id));
     if (!p) throw new HttpError(404, 'לא נמצא');
     const answers = {};
@@ -379,6 +438,158 @@ app.get(
       if (visible) perQuestion[qq.id] = p.score.perQuestion[qq.id];
     }
     res.json({ player: leaderboardRow(p), answers, perQuestion, badges: badgesFor(p.score) });
+  }),
+);
+
+// ---------- league routes ----------
+
+// Public: lets the login screen say which league an invite link is for.
+app.get(
+  '/api/leagues/:id/public',
+  wrap(async (req, res) => {
+    const league = await one(
+      'SELECT id, name, (SELECT COUNT(*)::int FROM league_members m WHERE m.league_id = leagues.id) AS members FROM leagues WHERE id = $1',
+      [String(req.params.id).toLowerCase()],
+    );
+    if (!league) throw new HttpError(404, 'לא מצאנו ליגה עם הקוד הזה');
+    res.json({ league });
+  }),
+);
+
+app.post(
+  '/api/leagues',
+  requireUser,
+  wrap(async (req, res) => {
+    if (!req.user.name) throw new HttpError(400, 'השלימו קודם את הפרופיל');
+    const name = String(req.body.name || '').trim().slice(0, 40);
+    if (name.length < 2) throw new HttpError(400, 'איך קוראים לליגה? (לפחות 2 תווים)');
+    await rateLimit(`create-league:${req.user.id}`, 10, 24 * 3600_000);
+    const id = newLeagueId();
+    const now = Date.now();
+    await q('INSERT INTO leagues (id, name, created_by, created_at) VALUES ($1, $2, $3, $4)', [id, name, req.user.id, now]);
+    await q('INSERT INTO league_members (league_id, user_id, role, team, joined_at) VALUES ($1, $2, $3, $4, $5)', [
+      id, req.user.id, 'admin', cleanTeam(req.body.team ?? req.user.team), now,
+    ]);
+    res.json({ league: { id, name, role: 'admin', members: 1 } });
+  }),
+);
+
+app.post(
+  '/api/leagues/:id/join',
+  requireUser,
+  wrap(async (req, res) => {
+    if (!req.user.name) throw new HttpError(400, 'השלימו קודם את הפרופיל');
+    const id = String(req.params.id).trim().toLowerCase();
+    await rateLimit(`join:${req.user.id}`, 30, 3600_000);
+    const league = await one('SELECT id, name FROM leagues WHERE id = $1', [id]);
+    if (!league) throw new HttpError(404, 'לא מצאנו ליגה עם הקוד הזה');
+    await q(
+      `INSERT INTO league_members (league_id, user_id, role, team, joined_at) VALUES ($1, $2, 'member', $3, $4)
+       ON CONFLICT (league_id, user_id) DO NOTHING`,
+      [id, req.user.id, cleanTeam(req.body.team ?? req.user.team), Date.now()],
+    );
+    res.json({ league });
+  }),
+);
+
+app.post(
+  '/api/leagues/:id/leave',
+  requireUser,
+  wrap(async (req, res) => {
+    const id = String(req.params.id);
+    const m = await membership(id, req.user.id);
+    if (!m) return res.json({ ok: true });
+    const others = await q('SELECT user_id, role FROM league_members WHERE league_id = $1 AND user_id <> $2', [id, req.user.id]);
+    if (m.role === 'admin' && others.length && !others.some((o) => o.role === 'admin')) {
+      throw new HttpError(400, 'את/ה המנהל/ת היחיד/ה — קודם מנו מישהו אחר לניהול הליגה');
+    }
+    if (others.length) await q('DELETE FROM league_members WHERE league_id = $1 AND user_id = $2', [id, req.user.id]);
+    else await q('DELETE FROM leagues WHERE id = $1', [id]);
+    res.json({ ok: true });
+  }),
+);
+
+app.patch(
+  '/api/leagues/:id',
+  requireUser,
+  wrap(async (req, res) => {
+    const league = await requireLeagueAdmin(req);
+    const name = String(req.body.name || '').trim().slice(0, 40);
+    if (name.length < 2) throw new HttpError(400, 'שם קצר מדי');
+    await q('UPDATE leagues SET name = $1 WHERE id = $2', [name, league.id]);
+    res.json({ ok: true });
+  }),
+);
+
+app.get(
+  '/api/leagues/:id/members',
+  requireUser,
+  wrap(async (req, res) => {
+    const league = await requireLeagueAdmin(req);
+    const members = await q(
+      `SELECT u.id, u.email, u.name, u.emoji, m.team, m.role, m.joined_at, u.pin_hash IS NOT NULL AS has_pin,
+         (SELECT COUNT(*)::int FROM predictions p WHERE p.user_id = u.id) AS answers,
+         (SELECT COUNT(*)::int FROM push_subs s WHERE s.user_id = u.id) AS push,
+         (SELECT COUNT(*)::int FROM league_members o WHERE o.user_id = u.id) AS leagues
+       FROM league_members m JOIN users u ON u.id = m.user_id
+       WHERE m.league_id = $1 ORDER BY m.joined_at`,
+      [league.id],
+    );
+    res.json({ members, mail: mailMode() });
+  }),
+);
+
+app.patch(
+  '/api/leagues/:id/members/:uid',
+  requireUser,
+  wrap(async (req, res) => {
+    const league = await requireLeagueAdmin(req);
+    const uid = Number(req.params.uid);
+    const m = await membership(league.id, uid);
+    if (!m) throw new HttpError(404, 'לא חבר/ה בליגה');
+    if ('role' in req.body) {
+      if (uid === req.user.id && req.body.role !== 'admin') throw new HttpError(400, 'אי אפשר להסיר הרשאת ניהול מעצמך');
+      await q('UPDATE league_members SET role = $1 WHERE league_id = $2 AND user_id = $3', [
+        req.body.role === 'admin' ? 'admin' : 'member', league.id, uid,
+      ]);
+    }
+    if ('team' in req.body) await q('UPDATE league_members SET team = $1 WHERE league_id = $2 AND user_id = $3', [cleanTeam(req.body.team), league.id, uid]);
+    if (req.body.resetPin) {
+      // A PIN belongs to the whole account, so a league admin may reset it only for players who are in no other league.
+      const [{ n }] = await q('SELECT COUNT(*)::int AS n FROM league_members WHERE user_id = $1', [uid]);
+      if (!req.user.is_admin && n > 1) throw new HttpError(403, 'השחקן/ית חבר/ה גם בליגות אחרות — רק מנהל/ת האתר יכול/ה לאפס את הקוד');
+      await q('UPDATE users SET pin_hash = NULL WHERE id = $1', [uid]);
+      await q('DELETE FROM sessions WHERE user_id = $1', [uid]);
+    }
+    res.json({ ok: true });
+  }),
+);
+
+app.delete(
+  '/api/leagues/:id/members/:uid',
+  requireUser,
+  wrap(async (req, res) => {
+    const league = await requireLeagueAdmin(req);
+    const uid = Number(req.params.uid);
+    if (uid === req.user.id) throw new HttpError(400, 'כדי לצאת מהליגה משתמשים ב״יציאה מהליגה״');
+    await q('DELETE FROM league_members WHERE league_id = $1 AND user_id = $2', [league.id, uid]);
+    res.json({ ok: true });
+  }),
+);
+
+app.post(
+  '/api/leagues/:id/broadcast',
+  requireUser,
+  wrap(async (req, res) => {
+    const league = await requireLeagueAdmin(req);
+    const title = String(req.body.title || '').trim().slice(0, 80);
+    const body = String(req.body.body || '').trim().slice(0, 300);
+    if (!title) throw new HttpError(400, 'צריך כותרת');
+    await rateLimit(`broadcast:${league.id}`, 20, 24 * 3600_000);
+    await q('INSERT INTO feed (league_id, title, body, url, created_at) VALUES ($1, $2, $3, $4, $5)', [league.id, title, body, '/', Date.now()]);
+    const members = await q('SELECT user_id FROM league_members WHERE league_id = $1', [league.id]);
+    const sent = await pushToUsers(members.map((m) => m.user_id), () => ({ title: `${league.name}: ${title}`, body, url: `/?league=${league.id}` }));
+    res.json({ sent });
   }),
 );
 
@@ -423,21 +634,32 @@ async function addFeed(userId, title, body, url = '/') {
   await q('INSERT INTO feed (user_id, title, body, url, created_at) VALUES ($1, $2, $3, $4, $5)', [userId, title, body, url, Date.now()]);
 }
 
-async function takeSnapshot(label) {
-  const { players } = await computeGame();
-  const data = Object.fromEntries(players.map((p) => [p.id, [p.total, p.rank, players.length]]));
-  await q('INSERT INTO snapshots (label, data, created_at) VALUES ($1, $2::jsonb, $3)', [label, json(data), Date.now()]);
-  return players;
+// Records every league's standings (for the rank-over-time chart) and returns, per player,
+// their standing in the first league they joined — that is what their push notification shows.
+async function takeSnapshots(label) {
+  const leagues = await q('SELECT id, name FROM leagues');
+  const firstLeague = new Map(
+    (await q('SELECT DISTINCT ON (user_id) user_id, league_id FROM league_members ORDER BY user_id, joined_at')).map((r) => [r.user_id, r.league_id]),
+  );
+  const standing = new Map();
+  const now = Date.now();
+  for (const l of leagues) {
+    const { players } = await computeGame(l.id);
+    if (!players.length) continue;
+    const data = Object.fromEntries(players.map((p) => [p.id, [p.total, p.rank, players.length]]));
+    await q('INSERT INTO snapshots (league_id, label, data, created_at) VALUES ($1, $2, $3::jsonb, $4)', [l.id, label, json(data), now]);
+    for (const p of players) if (firstLeague.get(p.id) === l.id) standing.set(p.id, { ...p, of: players.length, league: l.name });
+  }
+  return standing;
 }
 
 async function notifyStandings(label, title) {
-  const players = await takeSnapshot(label);
-  const byId = new Map(players.map((p) => [p.id, p]));
+  const standing = await takeSnapshots(label);
   await addFeed(null, title, `${label} — הטבלה התעדכנה`, '/#/board');
   return pushToUsers(null, (uid) => {
-    const p = byId.get(uid);
-    if (!p) return null;
-    return { title, body: `${label}\nהמקום שלך: ${p.rank} מתוך ${players.length} · ${p.total} נק׳`, url: '/#/board', tag: 'standings' };
+    const p = standing.get(uid);
+    const body = p ? `${label}\n${p.league}: המקום שלך ${p.rank} מתוך ${p.of} · ${p.total} נק׳` : `${label} — כנסו לראות את הטבלה`;
+    return { title, body, url: '/#/board', tag: 'standings' };
   });
 }
 
@@ -468,7 +690,7 @@ async function maybeRunReminders() {
     const id = `${r.key}:${lock}:${r.minutes}`;
     const claimed = await q('INSERT INTO reminders_sent (id, sent_at) VALUES ($1, $2) ON CONFLICT (id) DO NOTHING RETURNING id', [id, now]);
     if (!claimed.length) continue;
-    const { players } = await computeGame();
+    const { players } = await computeGame(null);
     const n1 = stageCount(1);
     const n2 = stageCount(2);
     const targets = players.filter((p) =>
@@ -505,7 +727,7 @@ app.get(
   requireUser,
   requireAdmin,
   wrap(async (req, res) => {
-    const [users, settings, results, push] = await Promise.all([
+    const [users, settings, results, push, leagues] = await Promise.all([
       q(
         `SELECT u.id, u.email, u.name, u.team, u.emoji, u.is_admin, u.created_at, u.last_seen, u.pin_hash IS NOT NULL AS has_pin,
            (SELECT COUNT(*)::int FROM predictions p WHERE p.user_id = u.id) AS answers,
@@ -515,8 +737,13 @@ app.get(
       getSettings(),
       getResults(),
       subscriptionCount(),
+      q(
+        `SELECT l.id, l.name, l.created_at, u.name AS creator,
+           (SELECT COUNT(*)::int FROM league_members m WHERE m.league_id = l.id) AS members
+         FROM leagues l LEFT JOIN users u ON u.id = l.created_by ORDER BY members DESC, l.created_at`,
+      ),
     ]);
-    res.json({ users, settings, results, mail: mailMode(), push });
+    res.json({ users, settings, results, mail: mailMode(), push, leagues });
   }),
 );
 
@@ -597,7 +824,7 @@ app.put(
     if (b.notify) {
       sent = await notifyStandings(label, b.final ? '🏆 שלב א׳ הוכרע — התוצאות הסופיות!' : `📡 ${label}`);
     } else if (Object.keys(seats).length === PARTIES.length) {
-      await takeSnapshot(label);
+      await takeSnapshots(label);
     }
     res.json({ results, sent, sum });
   }),

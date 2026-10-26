@@ -81,9 +81,16 @@ export function Me() {
     <a href="#/rules" class="card flat row" style=${{ textDecoration: 'none', color: 'inherit' }}>
       <span style=${{ fontSize: '22px' }}>📖</span><b class="grow">חוקי המשחק והניקוד</b><span class="muted">←</span>
     </a>
+    <a href="#/league" class="card flat row" style=${{ textDecoration: 'none', color: 'inherit' }}>
+      <span style=${{ fontSize: '22px' }}>🏟️</span>
+      <div class="grow"><b>הליגות שלי</b><div class="small muted">${state.league.name} · הזמנת חברים, מעבר ליגה${state.league.role === 'admin' ? ', ניהול' : ''}</div></div>
+      <span class="muted">←</span>
+    </a>
     ${state.user.isAdmin &&
     html`<a href="#/admin" class="card flat row" style=${{ textDecoration: 'none', color: 'inherit' }}>
-      <span style=${{ fontSize: '22px' }}>🛠️</span><b class="grow">ניהול המשחק</b><span class="muted">←</span>
+      <span style=${{ fontSize: '22px' }}>🛠️</span>
+      <div class="grow"><b>ניהול האתר</b><div class="small muted">תוצאות, זמני נעילה ושלב ב׳ — לכל הליגות</div></div>
+      <span class="muted">←</span>
     </a>`}
     <button class="btn quiet" onClick=${logout}>התנתקות</button>
   `;
@@ -97,7 +104,7 @@ function EditProfile({ onDone }) {
   async function save(e) {
     e.preventDefault();
     try {
-      await api('/me', { method: 'PATCH', body: { name, team, emoji } });
+      await api('/me', { method: 'PATCH', body: { name, team, emoji, league: state.league.id } });
       await refresh();
       toast('הפרופיל עודכן ✓');
       onDone();

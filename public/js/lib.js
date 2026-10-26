@@ -155,8 +155,25 @@ export async function promptInstall() {
   installListeners.forEach((f) => f());
 }
 
-export async function share(text) {
-  const url = location.origin;
+// ---------- leagues (remembered per device) ----------
+
+function store(key, value) {
+  try {
+    if (value === undefined) return localStorage.getItem(key);
+    if (value === null) localStorage.removeItem(key);
+    else localStorage.setItem(key, value);
+  } catch {
+    /* storage unavailable (private mode) */
+  }
+  return null;
+}
+export const getLeagueId = () => store('league');
+export const setLeagueId = (id) => store('league', id || null);
+export const getPendingJoin = () => store('pendingJoin');
+export const setPendingJoin = (id) => store('pendingJoin', id || null);
+export const inviteLink = (id) => `${location.origin}/?l=${id}`;
+
+export async function share(text, url = location.origin) {
   if (navigator.share) {
     try {
       await navigator.share({ title: '61 · ליגת הבחירות', text, url });

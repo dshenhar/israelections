@@ -1,5 +1,6 @@
 // Postgres access. In production (Vercel) DATABASE_URL points at Neon / any Postgres;
 // locally, with no DATABASE_URL, an embedded PGlite database is kept in ./data.
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 
@@ -84,12 +85,59 @@ const SCHEMA = [
   )`,
   `CREATE TABLE IF NOT EXISTS rate_limits (key TEXT PRIMARY KEY, count INTEGER NOT NULL, reset_at DOUBLE PRECISION NOT NULL)`,
   `CREATE TABLE IF NOT EXISTS reminders_sent (id TEXT PRIMARY KEY, sent_at DOUBLE PRECISION NOT NULL)`,
+  // Leagues: each workplace competes in its own league; bets are per user and count in every league they join.
+  `CREATE TABLE IF NOT EXISTS leagues (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    created_at DOUBLE PRECISION NOT NULL
+  )`,
+  `CREATE TABLE IF NOT EXISTS league_members (
+    league_id TEXT NOT NULL REFERENCES leagues(id) ON DELETE CASCADE,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    role TEXT NOT NULL DEFAULT 'member',
+    team TEXT,
+    joined_at DOUBLE PRECISION NOT NULL,
+    PRIMARY KEY (league_id, user_id)
+  )`,
+  `CREATE INDEX IF NOT EXISTS league_members_user ON league_members (user_id)`,
+  `ALTER TABLE feed ADD COLUMN IF NOT EXISTS league_id TEXT REFERENCES leagues(id) ON DELETE CASCADE`,
+  `ALTER TABLE snapshots ADD COLUMN IF NOT EXISTS league_id TEXT REFERENCES leagues(id) ON DELETE CASCADE`,
 ];
+
+const ID_ALPHABET = 'abcdefghjkmnpqrstuvwxyz23456789';
+export function newLeagueId() {
+  return Array.from(crypto.randomBytes(6), (b) => ID_ALPHABET[b % ID_ALPHABET.length]).join('');
+}
+
+// Games that started before leagues existed: everyone moves into one league with its own code.
+// Runs once per database (the kv row is the claim, so concurrent cold starts don't repeat it).
+async function migrateToLeagues() {
+  const claimed = await runQuery(
+    `INSERT INTO kv (key, value) VALUES ('leagues_migrated', $1::jsonb) ON CONFLICT (key) DO NOTHING RETURNING key`,
+    [json(Date.now())],
+  );
+  if (!claimed.length) return;
+  const [{ users }] = await runQuery('SELECT COUNT(*)::int AS users FROM users');
+  const [{ leagues }] = await runQuery('SELECT COUNT(*)::int AS leagues FROM leagues');
+  if (!users || leagues) return;
+  const id = newLeagueId();
+  const now = Date.now();
+  await runQuery('INSERT INTO leagues (id, name, created_by, created_at) VALUES ($1, $2, (SELECT MIN(id) FROM users), $3)', [id, 'הליגה של המשרד', now]);
+  await runQuery(
+    `INSERT INTO league_members (league_id, user_id, role, team, joined_at)
+     SELECT $1, id, CASE WHEN is_admin THEN 'admin' ELSE 'member' END, team, created_at FROM users
+     ON CONFLICT DO NOTHING`,
+    [id],
+  );
+  await runQuery('UPDATE snapshots SET league_id = $1 WHERE league_id IS NULL', [id]);
+}
 
 async function migrate() {
   for (let attempt = 0; ; attempt++) {
     try {
       for (const stmt of SCHEMA) await runQuery(stmt);
+      await migrateToLeagues();
       return;
     } catch (err) {
       // Two cold starts creating the same table at once can collide — the second try sees it.
@@ -153,8 +201,12 @@ export async function getResults() {
   return kvGet('results', { stage1: null, stage2: {} });
 }
 
-export async function allPredictions() {
-  const rows = await q('SELECT user_id, qid, answer, updated_at FROM predictions');
+// Predictions grouped by player; pass ids to load only those players.
+export async function allPredictions(ids) {
+  if (ids && !ids.length) return new Map();
+  const rows = ids
+    ? await q('SELECT user_id, qid, answer, updated_at FROM predictions WHERE user_id = ANY($1::int[])', [ids])
+    : await q('SELECT user_id, qid, answer, updated_at FROM predictions');
   const byUser = new Map();
   for (const r of rows) {
     if (!byUser.has(r.user_id)) byUser.set(r.user_id, { answers: {}, updated: {} });

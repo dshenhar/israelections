@@ -2,7 +2,7 @@ import { html } from 'htm/preact';
 import { render } from 'preact';
 import { useCallback, useEffect, useRef, useState } from 'preact/hooks';
 import { QUESTIONS, isOpen } from '/shared/game.js';
-import { api, registerSW, resyncPush, formatTime } from './lib.js';
+import { api, registerSW, resyncPush, formatTime, getLeagueId, setLeagueId, getPendingJoin, setPendingJoin } from './lib.js';
 import { Ctx, Spinner, useApp, useNow } from './ui.js';
 import { Login, Onboarding } from './pages/login.js';
 import { Home } from './pages/home.js';
@@ -12,6 +12,15 @@ import { Crowd } from './pages/crowd.js';
 import { Me } from './pages/me.js';
 import { Admin } from './pages/admin.js';
 import { Rules } from './pages/rules.js';
+import { LeagueGate, LeaguePage } from './pages/league.js';
+
+// Invite links (?l=code) and notification links (?league=code) carry a league; remember it and tidy the URL.
+{
+  const params = new URLSearchParams(location.search);
+  if (params.get('l')) setPendingJoin(params.get('l').trim().toLowerCase());
+  if (params.get('league')) setLeagueId(params.get('league'));
+  if (params.has('l') || params.has('league')) history.replaceState(null, '', location.pathname + location.hash);
+}
 
 function useHash() {
   const [hash, setHash] = useState(location.hash || '#/');
@@ -96,16 +105,19 @@ function Shell({ hash }) {
     case 'rules':
       page = html`<${Rules} />`;
       break;
+    case 'league':
+      page = html`<${LeaguePage} />`;
+      break;
     default:
       page = html`<${Home} />`;
   }
-  const navRoute = route === 'player' ? 'board' : route === 'admin' || route === 'rules' ? 'me' : route || '';
+  const navRoute = route === 'player' ? 'board' : ['admin', 'rules', 'league'].includes(route) ? 'me' : route || '';
   return html`<div class="app">
     <header class="topbar">
       <a href="#/" class="logo" aria-label="דף הבית">
         <span class="logo-mark">61</span>
-        <span class="logo-text">ליגת הבחירות</span>
       </a>
+      <a href="#/league" class="logo-text league-name" aria-label="הליגה שלי">${state.league.name} ▾</a>
       <span class="spacer"></span>
       <${StatusPill} />
       <a href="#/me" class="avatar-btn" aria-label="האזור האישי">${state.user.emoji || '🙂'}</a>
@@ -122,7 +134,9 @@ function App() {
   const [skew, setSkew] = useState(0);
   const [toastMsg, setToastMsg] = useState(null);
   const [fatal, setFatal] = useState(null);
+  const [joining, setJoining] = useState(!!getPendingJoin());
   const toastTimer = useRef();
+  const seq = useRef(0);
   const hash = useHash();
 
   const toast = useCallback((msg, bad = false) => {
@@ -132,8 +146,12 @@ function App() {
   }, []);
 
   const refresh = useCallback(async () => {
+    const mine = ++seq.current;
     try {
-      const s = await api('/state');
+      const league = getLeagueId();
+      const s = await api(`/state${league ? `?league=${encodeURIComponent(league)}` : ''}`);
+      if (mine !== seq.current) return s; // a newer request (e.g. after switching league) wins
+      if (s.league) setLeagueId(s.league.id);
       setSkew(s.now - Date.now());
       setState(s);
       setAuthed(true);
@@ -168,6 +186,22 @@ function App() {
     };
   }, [authed]);
 
+  // Joining from an invite link happens once the player is logged in and has a profile.
+  const named = !!state?.user?.name;
+  useEffect(() => {
+    const code = getPendingJoin();
+    if (!named || !code) return;
+    setPendingJoin(null);
+    api(`/leagues/${encodeURIComponent(code)}/join`, { method: 'POST' })
+      .then((r) => {
+        setLeagueId(r.league.id);
+        toast(`הצטרפת לליגת ״${r.league.name}״ 🎉`);
+      })
+      .catch((err) => toast(err.message, true))
+      .then(refresh)
+      .finally(() => setJoining(false));
+  }, [named]);
+
   let body;
   if (fatal && !state) {
     body = html`<div class="login"><div class="card stack center">
@@ -179,6 +213,7 @@ function App() {
   } else if (authed === null || (authed && !state) || !config) body = html`<${Spinner} />`;
   else if (!authed) body = html`<${Login} config=${config} onDone=${refresh} />`;
   else if (!state.user.name) body = html`<${Onboarding} />`;
+  else if (!state.league) body = joining ? html`<${Spinner} />` : html`<${LeagueGate} />`;
   else body = html`<${Shell} hash=${hash} />`;
 
   return html`<${Ctx.Provider} value=${{ state, setState, refresh, config, skew, toast }}>

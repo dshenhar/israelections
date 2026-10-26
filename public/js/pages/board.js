@@ -144,8 +144,8 @@ export function Player({ id }) {
   const resultsKey = state.results.stage1?.updatedAt;
 
   useEffect(() => {
-    api(`/players/${id}`).then(setData).catch((e) => setError(e.message));
-  }, [id, resultsKey]);
+    api(`/players/${id}?league=${encodeURIComponent(state.league.id)}`).then(setData).catch((e) => setError(e.message));
+  }, [id, resultsKey, state.league.id]);
 
   if (error) return html`<${Notice} icon="😕">${error}<//>`;
   if (!data) return html`<${Spinner} />`;

@@ -2,10 +2,11 @@ import { html } from 'htm/preact';
 import { useEffect, useState } from 'preact/hooks';
 import { QUESTIONS, isAnswered, isOpen, lockTime } from '/shared/game.js';
 import {
-  api, formatWhen, formatTime, timeAgo, isIOS, isStandalone, pushSupported, deviceSubscription, enablePush, share,
+  api, formatWhen, formatTime, timeAgo, isIOS, isStandalone, pushSupported, deviceSubscription, enablePush,
   canInstall, onInstallChange, promptInstall,
 } from '../lib.js';
 import { useApp, useNow, Countdown, Progress, Avatar, medal, Notice } from '../ui.js';
+import { shareInvite } from './league.js';
 
 export function Home() {
   const { state } = useApp();
@@ -230,14 +231,14 @@ function Feed() {
 }
 
 function Invite() {
-  const { toast } = useApp();
-  async function go() {
-    const r = await share('בואו להמר איתי על תוצאות הבחירות בליגה של המשרד 🗳️');
-    if (r === 'copied') toast('הקישור הועתק ✓');
-  }
+  const { state, toast } = useApp();
+  const league = state.league;
   return html`<div class="card row">
     <span style=${{ fontSize: '28px' }}>🤝</span>
-    <div class="grow"><b>הזמינו את הצוות</b><div class="small muted">יותר משתתפים = יותר כבוד לנצח</div></div>
-    <button class="btn small ghost" onClick=${go}>שיתוף</button>
+    <div class="grow">
+      <b>הזמינו את הצוות</b>
+      <div class="small muted">קישור הצטרפות לליגת ״${league.name}״ · <a href="#/league">קוד ${league.id}</a></div>
+    </div>
+    <button class="btn small ghost" onClick=${() => shareInvite(league, toast)}>שיתוף</button>
   </div>`;
 }

@@ -18,7 +18,7 @@ export function useNow() {
   return now;
 }
 
-export function Slip({ pid, selected, state, onClick, disabled, share, dim }) {
+export function Slip({ pid, selected, state, onClick, disabled, share, dim, poll }) {
   const p = PARTY[pid];
   const cls = ['slip', selected && 'selected', state, dim && 'dim'].filter(Boolean).join(' ');
   const stamp = state === 'correct' ? '✓' : state === 'wrong' ? '✗' : selected ? '✓' : null;
@@ -34,6 +34,7 @@ export function Slip({ pid, selected, state, onClick, disabled, share, dim }) {
     <span class="slip-letters">${p.letters}</span>
     <span class="slip-name">${p.name}</span>
     ${p.leader && html`<span class="slip-leader">${p.leader}</span>`}
+    ${poll && html`<span class="slip-poll">${poll}</span>`}
     ${share !== undefined && html`<span class="share">${share}%</span>`}
   </button>`;
 }

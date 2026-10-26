@@ -1,6 +1,6 @@
 import { html } from 'htm/preact';
-import { useState } from 'preact/hooks';
-import { api } from '../lib.js';
+import { useEffect, useState } from 'preact/hooks';
+import { api, getPendingJoin } from '../lib.js';
 import { useApp, EmojiPicker, EMOJIS } from '../ui.js';
 
 export function Login({ config, onDone }) {
@@ -8,6 +8,12 @@ export function Login({ config, onDone }) {
   const [email, setEmail] = useState('');
   const [secret, setSecret] = useState('');
   const [info, setInfo] = useState(null);
+  const [invite, setInvite] = useState(null);
+
+  useEffect(() => {
+    const code = getPendingJoin();
+    if (code) api(`/leagues/${encodeURIComponent(code)}/public`).then((r) => setInvite(r.league)).catch(() => {});
+  }, []);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
 
@@ -49,6 +55,11 @@ export function Login({ config, onDone }) {
       <h1>ליגת ניחושי הבחירות</h1>
       <p>מהמרים על תוצאות הבחירות לכנסת ה-26 ועל הקמת הממשלה — ומי שהכי צודק לוקח את המשרד</p>
     </div>
+    ${invite &&
+    html`<div class="notice good">
+      <span class="i">🎟️</span>
+      <div class="grow">הוזמנת לליגת <b>״${invite.name}״</b> (${invite.members} משתתפים). נכנסים עם המייל — וההצטרפות אוטומטית.</div>
+    </div>`}
 
     ${step === 'email'
       ? html`<form class="card stack" onSubmit=${start}>

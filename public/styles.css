@@ -151,6 +151,16 @@ p {
   opacity: 0.92;
 }
 
+.league-name {
+  color: inherit;
+  text-decoration: none;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 42vw;
+}
+
 .topbar .spacer {
   flex: 1;
 }
@@ -551,6 +561,19 @@ main {
   color: var(--navy);
 }
 
+.hero .hero-link {
+  display: block;
+  width: 100%;
+  margin-top: 8px;
+  padding: 10px 12px;
+  border: 1px dashed rgb(255 255 255 / 35%);
+  border-radius: 12px;
+  background: rgb(255 255 255 / 8%);
+  color: #fff;
+  font-size: 14px;
+  font-weight: 600;
+}
+
 .hero .btn.accent {
   background: var(--accent);
   color: #fff;
@@ -675,6 +698,19 @@ main {
   font-size: 11px;
   color: var(--muted);
   line-height: 1.2;
+}
+
+.slip-poll {
+  justify-self: center;
+  margin-top: 3px;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1.2;
+  color: var(--blue);
+  background: var(--blue-soft);
+  border-radius: 999px;
+  padding: 1px 7px;
+  font-variant-numeric: tabular-nums;
 }
 
 .slip.selected {
