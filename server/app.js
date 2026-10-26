@@ -142,10 +142,10 @@ const stageCount = (stage) => QUESTIONS.filter((q) => q.stage === stage).length;
 
 // Scores the players of one league (crowd stats and the lone-wolf bonus are relative to that league).
 // leagueId = null scores every player with a profile — used for reminders.
-async function computeGame(leagueId) {
+async function computeGame(leagueId, known = {}) {
   const [settings, results, users] = await Promise.all([
-    getSettings(),
-    getResults(),
+    known.settings || getSettings(),
+    known.results || getResults(),
     leagueId
       ? q(
           `SELECT u.id, u.name, u.emoji, m.team FROM league_members m JOIN users u ON u.id = m.user_id
@@ -180,6 +180,32 @@ async function computeGame(leagueId) {
     };
   });
   return { settings, results, crowd, players: rankPlayers(players, 'total') };
+}
+
+// Every open screen refreshes every 30 seconds, and scoring a league reads all of its bets.
+// Within a server instance a league's scored table is therefore shared for a few seconds instead
+// of being rebuilt per request. Entries are keyed by the results, so new results show at once;
+// a player's own answers, name and progress are always read fresh in /api/state.
+const GAME_TTL = 20_000;
+const gameCache = new Map();
+
+function leagueGame(leagueId, settings, results) {
+  const now = Date.now();
+  const key = JSON.stringify(results);
+  const hit = gameCache.get(leagueId);
+  if (hit && hit.key === key && now - hit.at < GAME_TTL) return hit.promise;
+  for (const [id, e] of gameCache) if (now - e.at > 5 * GAME_TTL) gameCache.delete(id);
+  const promise = computeGame(leagueId, { settings, results });
+  gameCache.set(leagueId, { at: now, key, promise });
+  promise.catch(() => gameCache.delete(leagueId));
+  return promise;
+}
+
+// Drops cached tables after a change on this instance (others catch up within GAME_TTL).
+async function forgetGames(userId) {
+  if (userId === undefined) return gameCache.clear();
+  const rows = await q('SELECT league_id FROM league_members WHERE user_id = $1', [userId]);
+  for (const r of rows) gameCache.delete(r.league_id);
 }
 
 function leaderboardRow(p) {
@@ -280,7 +306,9 @@ app.post(
   '/api/auth/start',
   wrap(async (req, res) => {
     const email = normalizeEmail(req.body.email);
-    await rateLimit(`start:${req.ip}`, 30, 15 * 60_000);
+    // A whole office typically shares one public IP, so this per-IP cap is generous;
+    // guessing is limited per email in /verify.
+    await rateLimit(`start:${req.ip}`, 400, 15 * 60_000);
     if (!mailMode()) {
       const user = await one('SELECT pin_hash FROM users WHERE email = $1', [email]);
       return res.json({ mode: 'pin', hasPin: !!user?.pin_hash });
@@ -366,6 +394,7 @@ app.patch(
       await q('UPDATE users SET team = $1 WHERE id = $2', [team, req.user.id]);
       if (req.body.league) await q('UPDATE league_members SET team = $1 WHERE league_id = $2 AND user_id = $3', [team, String(req.body.league), req.user.id]);
     }
+    await forgetGames(req.user.id);
     res.json({ user: publicUser({ ...req.user, name, emoji }) });
   }),
 );
@@ -376,12 +405,13 @@ app.get(
   wrap(async (req, res) => {
     const now = Date.now();
     const uid = req.user.id;
-    const { leagues, league } = await currentLeague(req);
+    const [{ leagues, league }, settings, results] = await Promise.all([currentLeague(req), getSettings(), getResults()]);
     const lid = league?.id || null;
     const [game, myAnswers, snapshots, feed, hasPush] = await Promise.all([
-      computeGame(lid),
+      lid ? leagueGame(lid, settings, results) : null,
       q('SELECT qid, answer, updated_at FROM predictions WHERE user_id = $1', [uid]),
-      lid ? q('SELECT label, data, created_at FROM snapshots WHERE league_id = $1 ORDER BY id', [lid]) : [],
+      // only this player's entry of each snapshot, not the whole league's
+      lid ? q('SELECT label, created_at, data -> $2::text AS mine FROM snapshots WHERE league_id = $1 ORDER BY id', [lid, String(uid)]) : [],
       q(
         `SELECT id, title, body, url, created_at FROM feed
          WHERE (league_id IS NULL AND (user_id IS NULL OR user_id = $1)) OR league_id = $2
@@ -393,22 +423,32 @@ app.get(
         ? q('UPDATE users SET last_seen = $1 WHERE id = $2', [now, uid])
         : null,
     ]);
-    const { settings, results, crowd } = game;
-    const players = lid ? game.players : [];
-    const me = players.find((p) => p.id === uid);
+    const crowd = game?.crowd || {};
+    const players = game?.players || [];
     const answers = Object.fromEntries(myAnswers.map((r) => [r.qid, r.answer]));
+    // The player's own row is always current, even while the league table comes from the cache.
+    const answered = { 1: 0, 2: 0 };
+    for (const qq of QUESTIONS) if (isAnswered(qq, answers[qq.id])) answered[qq.stage]++;
+    const mine = {
+      name: req.user.name,
+      emoji: req.user.emoji || '🙂',
+      team: league?.team || '',
+      answered1: answered[1],
+      answered2: answered[2],
+    };
+    const board = players.map((p) => (p.id === uid ? { ...leaderboardRow(p), ...mine } : leaderboardRow(p)));
     const visibleCrowd = {};
     if (lid) for (const qq of QUESTIONS) if (isLocked(qq, settings, now)) visibleCrowd[qq.id] = crowd[qq.id];
     const myHistory = snapshots
       .map((s) => {
-        const d = s.data[uid];
+        const d = s.mine;
         return d && { label: s.label, at: s.created_at, points: d[0], rank: d[1], of: d[2] };
       })
       .filter(Boolean);
     const s1Winners = results.stage1?.final ? winners(players, 's1') : [];
     const s2Winners = settings.stage2Final ? winners(players, 's2') : [];
-    const myScore = me?.score || scorePlayer(answers, results, crowd);
-    const teams = [...new Set(players.map((p) => p.team).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'he'));
+    const myScore = scorePlayer(answers, results, crowd);
+    const teams = [...new Set(board.map((p) => p.team).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'he'));
 
     // No background scheduler on serverless: the traffic itself drives the lock reminders.
     waitUntil(maybeRunReminders().catch((e) => console.error('reminders', e)));
@@ -429,10 +469,10 @@ app.get(
         stage2Winner: s2Winners.includes(uid),
         complete1: QUESTIONS.filter((qq) => qq.stage === 1).every((qq) => isAnswered(qq, answers[qq.id])),
       }),
-      leaderboard: players.map(leaderboardRow),
+      leaderboard: board,
       winners: { 1: s1Winners, 2: s2Winners },
       crowd: visibleCrowd,
-      participants: { total: players.length, complete1: players.filter((p) => p.answered1 === stageCount(1)).length },
+      participants: { total: board.length, complete1: board.filter((p) => p.answered1 === stageCount(1)).length },
       teams,
       history: myHistory,
       feed,
@@ -462,6 +502,7 @@ app.put(
        ON CONFLICT (user_id, qid) DO UPDATE SET answer = EXCLUDED.answer, updated_at = EXCLUDED.updated_at`,
       [req.user.id, qq.id, json(answer), Date.now()],
     );
+    await forgetGames(req.user.id);
     res.json({ ok: true, answer });
   }),
 );
@@ -471,9 +512,9 @@ app.get(
   '/api/players/:id',
   requireUser,
   wrap(async (req, res) => {
-    const { league } = await currentLeague(req);
+    const [{ league }, settings, results] = await Promise.all([currentLeague(req), getSettings(), getResults()]);
     if (!league) throw new HttpError(404, 'לא נמצא');
-    const { settings, players } = await computeGame(league.id);
+    const { players } = await leagueGame(league.id, settings, results);
     const p = players.find((x) => x.id === Number(req.params.id));
     if (!p) throw new HttpError(404, 'לא נמצא');
     const answers = {};
@@ -534,6 +575,7 @@ app.post(
        ON CONFLICT (league_id, user_id) DO NOTHING`,
       [id, req.user.id, cleanTeam(req.body.team ?? req.user.team), Date.now()],
     );
+    gameCache.delete(id);
     res.json({ league });
   }),
 );
@@ -551,6 +593,7 @@ app.post(
     }
     if (others.length) await q('DELETE FROM league_members WHERE league_id = $1 AND user_id = $2', [id, req.user.id]);
     else await q('DELETE FROM leagues WHERE id = $1', [id]);
+    gameCache.delete(id);
     res.json({ ok: true });
   }),
 );
@@ -569,6 +612,7 @@ app.patch(
     if ('code' in req.body) {
       await rateLimit(`code:${league.id}`, 10, 3600_000);
       id = await changeLeagueCode(league.id, req.body.code);
+      gameCache.delete(league.id);
     }
     res.json({ ok: true, id });
   }),
@@ -606,7 +650,10 @@ app.patch(
         req.body.role === 'admin' ? 'admin' : 'member', league.id, uid,
       ]);
     }
-    if ('team' in req.body) await q('UPDATE league_members SET team = $1 WHERE league_id = $2 AND user_id = $3', [cleanTeam(req.body.team), league.id, uid]);
+    if ('team' in req.body) {
+      await q('UPDATE league_members SET team = $1 WHERE league_id = $2 AND user_id = $3', [cleanTeam(req.body.team), league.id, uid]);
+      gameCache.delete(league.id);
+    }
     if (req.body.resetPin) {
       // A PIN belongs to the whole account, so a league admin may reset it only for players who are in no other league.
       const [{ n }] = await q('SELECT COUNT(*)::int AS n FROM league_members WHERE user_id = $1', [uid]);
@@ -626,6 +673,7 @@ app.delete(
     const uid = Number(req.params.uid);
     if (uid === req.user.id) throw new HttpError(400, 'כדי לצאת מהליגה משתמשים ב״יציאה מהליגה״');
     await q('DELETE FROM league_members WHERE league_id = $1 AND user_id = $2', [league.id, uid]);
+    gameCache.delete(league.id);
     res.json({ ok: true });
   }),
 );
@@ -948,6 +996,7 @@ app.patch(
       await q('UPDATE users SET pin_hash = NULL WHERE id = $1', [id]);
       await q('DELETE FROM sessions WHERE user_id = $1', [id]);
     }
+    await forgetGames();
     res.json({ ok: true });
   }),
 );
@@ -960,6 +1009,7 @@ app.delete(
     const id = Number(req.params.id);
     if (id === req.user.id) throw new HttpError(400, 'אי אפשר למחוק את עצמך');
     await q('DELETE FROM users WHERE id = $1', [id]);
+    await forgetGames();
     res.json({ ok: true });
   }),
 );
