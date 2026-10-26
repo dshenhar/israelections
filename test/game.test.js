@@ -104,9 +104,9 @@ test('stage 2 scoring and coalition', () => {
   assert.throws(() => validateAnswer(QUESTION.coalition, { amcha: 'coalition' }, r));
 });
 
-test('each stage is worth 100 points', () => {
+test('stage totals: 102 on election night, 100 for the government', () => {
   const r = { stage1: { seats: { ...seats, rzp: 4, yashar: 20 } } }; // 12 parties in the Knesset
-  assert.equal(stageMax(1, r), 100);
+  assert.equal(stageMax(1, r), 102);
   assert.equal(stageMax(2, r), 100);
 });
 

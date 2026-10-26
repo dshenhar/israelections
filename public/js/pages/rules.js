@@ -1,5 +1,5 @@
 import { html } from 'htm/preact';
-import { QUESTIONS, STAGES, maxPoints, LONE_WOLF_MIN_VOTERS, POLL_SOURCE, BLOCS, PARTY } from '/shared/game.js';
+import { QUESTIONS, STAGES, maxPoints, stageMax, LONE_WOLF_MIN_VOTERS, POLL_SOURCE, BLOCS, PARTY } from '/shared/game.js';
 import { formatWhen } from '../lib.js';
 import { useApp } from '../ui.js';
 
@@ -18,7 +18,7 @@ export function Rules() {
   return html`
     <section class="hero">
       <h1>📖 איך זה עובד</h1>
-      <p class="sub">שני שלבים, 100 נקודות בכל אחד. מי שצובר הכי הרבה — לוקח.</p>
+      <p class="sub">שני שלבים: ליל הבחירות (${stageMax(1, state.results)} נק׳) והקמת הממשלה (${stageMax(2, state.results)} נק׳). מי שצובר הכי הרבה — לוקח.</p>
     </section>
 
     <section class="card rules">

@@ -106,7 +106,7 @@ export const QUESTIONS = [
     options: blocRanges,
   },
   {
-    id: 'changeBloc', stage: 1, type: 'range', emoji: '🟠', points: 8,
+    id: 'changeBloc', stage: 1, type: 'range', emoji: '🟠', points: 10,
     title: 'גוש איזנקוט-בנט',
     desc: 'כמה מנדטים יקבלו יחד ישר!, ביחד, הדמוקרטים וישראל ביתנו?',
     context: 'בסקרים האחרונים: בין 52 ל-56 בכאן, ב-12 וב-13 · 44 בערוץ 14',
