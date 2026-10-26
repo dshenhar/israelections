@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {
   QUESTION, PARTIES, prefillSeats, validateAnswer, resolve, scoreQuestion, scorePlayer, crowdStats, rankPlayers,
   lockTime, isOpen, isLocked, stageMax, knessetParties,
-} from '../shared/game.js';
+} from '../public/shared/game.js';
 
 const seats = {
   yashar: 24, likud: 22, together: 13, democrats: 9, joint: 9, yb: 7, otzma: 9, utj: 7, shas: 8, rzp: 0,

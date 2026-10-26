@@ -5,17 +5,21 @@
   "description": "61 – ליגת ניחושי הבחירות של המשרד",
   "type": "module",
   "engines": {
-    "node": ">=22.13"
+    "node": "22.x"
   },
   "scripts": {
-    "start": "node --disable-warning=ExperimentalWarning server/index.js",
-    "dev": "node --disable-warning=ExperimentalWarning --watch server/index.js",
-    "test": "node --disable-warning=ExperimentalWarning --test test/*.test.js"
+    "start": "node server/index.js",
+    "dev": "node --watch server/index.js",
+    "vendor": "node scripts/vendor.js",
+    "test": "node --test test/*.test.js"
   },
   "dependencies": {
+    "@electric-sql/pglite": "^0.5.11",
+    "@vercel/functions": "^3.10.3",
     "express": "^4.22.3",
     "htm": "^3.1.1",
     "nodemailer": "^10.2.1",
+    "pg": "^8.23.1",
     "preact": "^11.0.2",
     "web-push": "^3.6.7"
   }

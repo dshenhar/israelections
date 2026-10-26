@@ -1,59 +1,64 @@
 import webpush from 'web-push';
-import { db, kvGet, kvSet } from './db.js';
+import { q, one, json, kvInit } from './db.js';
 
-let keys = kvGet('vapid');
-if (!keys) {
-  keys = webpush.generateVAPIDKeys();
-  kvSet('vapid', keys);
+let keysPromise;
+async function vapid() {
+  keysPromise ||= kvInit('vapid', () => webpush.generateVAPIDKeys()).then((keys) => {
+    webpush.setVapidDetails(`mailto:${process.env.VAPID_EMAIL || 'admin@example.com'}`, keys.publicKey, keys.privateKey);
+    return keys;
+  });
+  return keysPromise;
 }
-webpush.setVapidDetails(`mailto:${process.env.VAPID_EMAIL || 'admin@example.com'}`, keys.publicKey, keys.privateKey);
 
-export const vapidPublicKey = keys.publicKey;
+export async function vapidPublicKey() {
+  return (await vapid()).publicKey;
+}
 
-export function saveSubscription(userId, sub) {
+export async function saveSubscription(userId, sub) {
   if (!sub?.endpoint || !sub?.keys?.p256dh || !sub?.keys?.auth) throw new Error('bad subscription');
-  db.prepare(
-    `INSERT INTO push_subs (endpoint, user_id, data, created_at) VALUES (?, ?, ?, ?)
-     ON CONFLICT(endpoint) DO UPDATE SET user_id = excluded.user_id, data = excluded.data`,
-  ).run(sub.endpoint, userId, JSON.stringify(sub), Date.now());
+  await q(
+    `INSERT INTO push_subs (endpoint, user_id, data, created_at) VALUES ($1, $2, $3::jsonb, $4)
+     ON CONFLICT (endpoint) DO UPDATE SET user_id = EXCLUDED.user_id, data = EXCLUDED.data`,
+    [sub.endpoint, userId, json(sub), Date.now()],
+  );
 }
 
-export function removeSubscription(endpoint) {
-  db.prepare('DELETE FROM push_subs WHERE endpoint = ?').run(endpoint);
+export async function removeSubscription(endpoint) {
+  await q('DELETE FROM push_subs WHERE endpoint = $1', [endpoint]);
 }
 
-export function subscriptionCount() {
-  return db.prepare('SELECT COUNT(*) AS n, COUNT(DISTINCT user_id) AS users FROM push_subs').get();
+export async function subscriptionCount() {
+  return one('SELECT COUNT(*)::int AS n, COUNT(DISTINCT user_id)::int AS users FROM push_subs');
 }
 
-export function userHasPush(userId) {
-  return !!db.prepare('SELECT 1 FROM push_subs WHERE user_id = ? LIMIT 1').get(userId);
+export async function userHasPush(userId) {
+  return !!(await one('SELECT 1 FROM push_subs WHERE user_id = $1 LIMIT 1', [userId]));
 }
 
 async function sendOne(row, payload) {
   try {
-    await webpush.sendNotification(JSON.parse(row.data), JSON.stringify(payload), { TTL: 6 * 3600, urgency: 'high' });
+    await webpush.sendNotification(row.data, JSON.stringify(payload), { TTL: 6 * 3600, urgency: 'high' });
     return true;
   } catch (err) {
-    if (err.statusCode === 404 || err.statusCode === 410) removeSubscription(row.endpoint);
+    if (err.statusCode === 404 || err.statusCode === 410) await removeSubscription(row.endpoint);
     else console.warn('push failed', err.statusCode || err.message);
     return false;
   }
 }
 
 // payloadFor(userId) returns {title, body, url} or null to skip that user.
+// userIds = null sends to everybody.
 export async function pushToUsers(userIds, payloadFor) {
+  await vapid();
+  if (userIds && !userIds.length) return 0;
   const rows = userIds
-    ? db.prepare(`SELECT * FROM push_subs WHERE user_id IN (${userIds.map(() => '?').join(',') || 'NULL'})`).all(...userIds)
-    : db.prepare('SELECT * FROM push_subs').all();
-  let sent = 0;
-  const cache = new Map();
-  await Promise.all(
-    rows.map(async (row) => {
-      if (!cache.has(row.user_id)) cache.set(row.user_id, payloadFor(row.user_id));
-      const payload = cache.get(row.user_id);
-      if (payload && (await sendOne(row, payload))) sent++;
+    ? await q('SELECT * FROM push_subs WHERE user_id = ANY($1::int[])', [userIds])
+    : await q('SELECT * FROM push_subs');
+  const results = await Promise.all(
+    rows.map((row) => {
+      const payload = payloadFor(row.user_id);
+      return payload ? sendOne(row, payload) : false;
     }),
   );
-  return sent;
+  return results.filter(Boolean).length;
 }

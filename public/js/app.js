@@ -121,6 +121,7 @@ function App() {
   const [authed, setAuthed] = useState(null);
   const [skew, setSkew] = useState(0);
   const [toastMsg, setToastMsg] = useState(null);
+  const [fatal, setFatal] = useState(null);
   const toastTimer = useRef();
   const hash = useHash();
 
@@ -136,11 +137,14 @@ function App() {
       setSkew(s.now - Date.now());
       setState(s);
       setAuthed(true);
+      setFatal(null);
       return s;
     } catch (err) {
       if (err.status === 401) {
         setAuthed(false);
         setState(null);
+      } else {
+        setFatal(err.message);
       }
       return null;
     }
@@ -155,7 +159,7 @@ function App() {
   useEffect(() => {
     if (!authed) return undefined;
     resyncPush();
-    const id = setInterval(() => document.visibilityState === 'visible' && refresh(), 20_000);
+    const id = setInterval(() => document.visibilityState === 'visible' && refresh(), 30_000);
     const onVis = () => document.visibilityState === 'visible' && refresh();
     document.addEventListener('visibilitychange', onVis);
     return () => {
@@ -165,7 +169,14 @@ function App() {
   }, [authed]);
 
   let body;
-  if (authed === null || (authed && !state) || !config) body = html`<${Spinner} />`;
+  if (fatal && !state) {
+    body = html`<div class="login"><div class="card stack center">
+      <div style=${{ fontSize: '40px' }}>🛠️</div>
+      <b>האפליקציה לא זמינה כרגע</b>
+      <p class="small muted">${fatal}</p>
+      <button class="btn" onClick=${() => { setFatal(null); refresh(); }}>לנסות שוב</button>
+    </div></div>`;
+  } else if (authed === null || (authed && !state) || !config) body = html`<${Spinner} />`;
   else if (!authed) body = html`<${Login} config=${config} onDone=${refresh} />`;
   else if (!state.user.name) body = html`<${Onboarding} />`;
   else body = html`<${Shell} hash=${hash} />`;
