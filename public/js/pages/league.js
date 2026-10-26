@@ -159,6 +159,7 @@ function LeagueAdmin({ league }) {
   const { state, refresh, toast } = useApp();
   const [data, setData] = useState(null);
   const [name, setName] = useState(league.name);
+  const [code, setCode] = useState(league.id);
   const [title, setTitle] = useState('');
   const [body, setBody] = useState('');
   const [q, setQ] = useState('');
@@ -167,7 +168,23 @@ function LeagueAdmin({ league }) {
   useEffect(() => {
     load();
     setName(league.name);
+    setCode(league.id);
   }, [league.id]);
+
+  async function saveCode(e) {
+    e.preventDefault();
+    const next = code.trim().toLowerCase();
+    if (next === league.id) return;
+    if (!confirm(`לשנות את קוד הליגה ל-${next}? קישורים ישנים ימשיכו לעבוד.`)) return;
+    try {
+      const r = await api(`/leagues/${league.id}`, { method: 'PATCH', body: { code: next } });
+      setLeagueId(r.id);
+      await refresh();
+      toast(`הקוד עודכן ✓ הקישור החדש: ${inviteLink(r.id).replace(/^https?:\/\//, '')}`);
+    } catch (err) {
+      toast(err.message, true);
+    }
+  }
 
   async function call(path, method, payload, msg) {
     try {
@@ -185,11 +202,26 @@ function LeagueAdmin({ league }) {
 
   return html`
     <details class="card">
-      <summary class="card-title">✏️ שם הליגה</summary>
-      <form class="row" onSubmit=${(e) => { e.preventDefault(); call(`/leagues/${league.id}`, 'PATCH', { name }, 'השם עודכן ✓'); }}>
-        <input class="input grow" value=${name} onInput=${(e) => setName(e.target.value)} maxlength="40" />
-        <button class="btn small">שמירה</button>
-      </form>
+      <summary class="card-title">✏️ שם וקוד הליגה</summary>
+      <div class="stack">
+        <form class="field" onSubmit=${(e) => { e.preventDefault(); call(`/leagues/${league.id}`, 'PATCH', { name }, 'השם עודכן ✓'); }}>
+          <label for="lname">שם</label>
+          <div class="row">
+            <input id="lname" class="input grow" value=${name} onInput=${(e) => setName(e.target.value)} maxlength="40" />
+            <button class="btn small">שמירה</button>
+          </div>
+        </form>
+        <form class="field" onSubmit=${saveCode}>
+          <label for="lcode">קוד (מופיע בקישור ההזמנה)</label>
+          <div class="row">
+            <input id="lcode" class="input grow ltr" value=${code} maxlength="30" autocapitalize="off" autocomplete="off" spellcheck="false"
+              onInput=${(e) => setCode(e.target.value.toLowerCase().replace(/[^a-z0-9-]/g, ''))} />
+            <button class="btn small" disabled=${code === league.id || code.length < 3}>שמירה</button>
+          </div>
+          <span class="tiny muted ltr">${inviteLink(code || league.id).replace(/^https?:\/\//, '')}</span>
+          <span class="tiny muted">אותיות באנגלית, ספרות ומקף (3–30 תווים). קישורים עם הקוד הישן ימשיכו לעבוד.</span>
+        </form>
+      </div>
     </details>
 
     <details class="card">

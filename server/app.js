@@ -207,11 +207,57 @@ async function myLeagues(userId) {
   );
 }
 
+// A league code as typed or linked — current code or an old one it was renamed from.
+async function resolveLeagueId(code) {
+  const id = String(code || '').trim().toLowerCase();
+  if (!id) return null;
+  const row = await one(
+    `SELECT id FROM leagues WHERE id = $1
+     UNION ALL SELECT league_id FROM league_aliases WHERE alias = $1 LIMIT 1`,
+    [id],
+  );
+  return row?.id || null;
+}
+
 // The league named in ?league=, or the first one the player joined.
 async function currentLeague(req) {
   const leagues = await myLeagues(req.user.id);
-  const wanted = String(req.query.league || '');
+  let wanted = String(req.query.league || '');
+  if (wanted && !leagues.some((l) => l.id === wanted)) wanted = (await resolveLeagueId(wanted)) || '';
   return { leagues, league: leagues.find((l) => l.id === wanted) || leagues[0] || null };
+}
+
+const CODE_RE = /^[a-z0-9](?:[a-z0-9-]{1,28}[a-z0-9])$/;
+
+// Moves a league to a new code in one statement, keeping members, announcements and history,
+// and remembers the old code as an alias.
+async function changeLeagueCode(oldId, raw) {
+  const code = String(raw || '').trim().toLowerCase();
+  if (!CODE_RE.test(code)) throw new HttpError(400, 'קוד הליגה: 3–30 תווים — אותיות באנגלית, ספרות ומקף');
+  if (code === oldId) return oldId;
+  const taken = await one(
+    `SELECT 1 FROM leagues WHERE id = $1
+     UNION ALL SELECT 1 FROM league_aliases WHERE alias = $1 AND league_id <> $2 LIMIT 1`,
+    [code, oldId],
+  );
+  if (taken) throw new HttpError(409, 'הקוד הזה כבר תפוס — נסו אחר');
+  await q(
+    `WITH moved AS (
+       INSERT INTO leagues (id, name, created_by, created_at)
+       SELECT $2, name, created_by, created_at FROM leagues WHERE id = $1 RETURNING id
+     ), m AS (UPDATE league_members SET league_id = $2 WHERE league_id = $1 RETURNING 1),
+     f AS (UPDATE feed SET league_id = $2 WHERE league_id = $1 RETURNING 1),
+     s AS (UPDATE snapshots SET league_id = $2 WHERE league_id = $1 RETURNING 1),
+     a AS (UPDATE league_aliases SET league_id = $2 WHERE league_id = $1 RETURNING 1)
+     DELETE FROM leagues WHERE id = $1 AND EXISTS (SELECT 1 FROM moved)`,
+    [oldId, code],
+  );
+  await q('DELETE FROM league_aliases WHERE alias = $1', [code]);
+  await q(
+    'INSERT INTO league_aliases (alias, league_id) VALUES ($1, $2) ON CONFLICT (alias) DO UPDATE SET league_id = EXCLUDED.league_id',
+    [oldId, code],
+  );
+  return code;
 }
 
 async function membership(leagueId, userId) {
@@ -219,7 +265,7 @@ async function membership(leagueId, userId) {
 }
 
 async function requireLeagueAdmin(req) {
-  const league = await one('SELECT * FROM leagues WHERE id = $1', [req.params.id]);
+  const league = await one('SELECT * FROM leagues WHERE id = $1', [await resolveLeagueId(req.params.id)]);
   if (!league) throw new HttpError(404, 'הליגה לא נמצאה');
   const m = await membership(league.id, req.user.id);
   if (!req.user.is_admin && m?.role !== 'admin') throw new HttpError(403, 'רק מנהלי הליגה יכולים לעשות את זה');
@@ -449,7 +495,7 @@ app.get(
   wrap(async (req, res) => {
     const league = await one(
       'SELECT id, name, (SELECT COUNT(*)::int FROM league_members m WHERE m.league_id = leagues.id) AS members FROM leagues WHERE id = $1',
-      [String(req.params.id).toLowerCase()],
+      [await resolveLeagueId(req.params.id)],
     );
     if (!league) throw new HttpError(404, 'לא מצאנו ליגה עם הקוד הזה');
     res.json({ league });
@@ -479,9 +525,9 @@ app.post(
   requireUser,
   wrap(async (req, res) => {
     if (!req.user.name) throw new HttpError(400, 'השלימו קודם את הפרופיל');
-    const id = String(req.params.id).trim().toLowerCase();
     await rateLimit(`join:${req.user.id}`, 30, 3600_000);
-    const league = await one('SELECT id, name FROM leagues WHERE id = $1', [id]);
+    const id = await resolveLeagueId(req.params.id);
+    const league = id && (await one('SELECT id, name FROM leagues WHERE id = $1', [id]));
     if (!league) throw new HttpError(404, 'לא מצאנו ליגה עם הקוד הזה');
     await q(
       `INSERT INTO league_members (league_id, user_id, role, team, joined_at) VALUES ($1, $2, 'member', $3, $4)
@@ -514,10 +560,17 @@ app.patch(
   requireUser,
   wrap(async (req, res) => {
     const league = await requireLeagueAdmin(req);
-    const name = String(req.body.name || '').trim().slice(0, 40);
-    if (name.length < 2) throw new HttpError(400, 'שם קצר מדי');
-    await q('UPDATE leagues SET name = $1 WHERE id = $2', [name, league.id]);
-    res.json({ ok: true });
+    if ('name' in req.body) {
+      const name = String(req.body.name || '').trim().slice(0, 40);
+      if (name.length < 2) throw new HttpError(400, 'שם קצר מדי');
+      await q('UPDATE leagues SET name = $1 WHERE id = $2', [name, league.id]);
+    }
+    let id = league.id;
+    if ('code' in req.body) {
+      await rateLimit(`code:${league.id}`, 10, 3600_000);
+      id = await changeLeagueCode(league.id, req.body.code);
+    }
+    res.json({ ok: true, id });
   }),
 );
 

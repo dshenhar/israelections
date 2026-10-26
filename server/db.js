@@ -103,6 +103,11 @@ const SCHEMA = [
   `CREATE INDEX IF NOT EXISTS league_members_user ON league_members (user_id)`,
   `ALTER TABLE feed ADD COLUMN IF NOT EXISTS league_id TEXT REFERENCES leagues(id) ON DELETE CASCADE`,
   `ALTER TABLE snapshots ADD COLUMN IF NOT EXISTS league_id TEXT REFERENCES leagues(id) ON DELETE CASCADE`,
+  // Old codes of leagues whose code was changed, so links already sent keep working.
+  `CREATE TABLE IF NOT EXISTS league_aliases (
+    alias TEXT PRIMARY KEY,
+    league_id TEXT NOT NULL REFERENCES leagues(id) ON DELETE CASCADE
+  )`,
 ];
 
 const ID_ALPHABET = 'abcdefghjkmnpqrstuvwxyz23456789';
