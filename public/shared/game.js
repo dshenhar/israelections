@@ -99,14 +99,14 @@ export const QUESTIONS = [
     desc: 'חלקו 120 מנדטים. פגיעה מדויקת = 2 נק׳, פספוס במנדט אחד = נק׳ אחת.',
   },
   {
-    id: 'rightBloc', stage: 1, type: 'range', emoji: '🔵', points: 10,
+    id: 'rightBloc', stage: 1, type: 'range', emoji: '🔵', points: 9,
     title: 'גוש נתניהו',
     desc: 'כמה מנדטים יקבלו יחד הליכוד, ש״ס, יהדות התורה, עוצמה יהודית והציונות הדתית?',
     context: 'בסקרים האחרונים: 50 בכאן, ב-12 וב-13 · 62 בערוץ 14',
     options: blocRanges,
   },
   {
-    id: 'changeBloc', stage: 1, type: 'range', emoji: '🟠', points: 10,
+    id: 'changeBloc', stage: 1, type: 'range', emoji: '🟠', points: 9,
     title: 'גוש איזנקוט-בנט',
     desc: 'כמה מנדטים יקבלו יחד ישר!, ביחד, הדמוקרטים וישראל ביתנו?',
     context: 'בסקרים האחרונים: בין 52 ל-56 בכאן, ב-12 וב-13 · 44 בערוץ 14',
